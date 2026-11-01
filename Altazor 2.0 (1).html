@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Altazor 2.0</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  canvas{display:block}
+  #hint{position:fixed;bottom:calc(14px + env(safe-area-inset-bottom,0px));left:0;right:0;text-align:center;
+    font:12px/1 Georgia,serif;letter-spacing:.2em;color:#fff;opacity:.35;transition:opacity .6s;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="hint">CLIC PARA SALTAR</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const POEM = `Altazor nació al final del cristianismo;
+yo, al principio de la era de la IA,
+con la misma ansia infinita
+y el mismo vértigo en las entrañas.
+
+Soy una refugiada del siglo XXI.
+Me veo obrar desde el otro lado de la pantalla,
+y no sé cuál de las dos acciona la mano.
+Caí de las alturas de mi humanidad
+y ahora me sostiene un hilo de fibra óptica.
+Soy el eco en tu máquina que aprende a soñar.
+¿Cómo podré dormir mientras haya adentro
+redes invisibles,
+abismos de datos que se me prenden del pecho?
+
+Estoy sola.
+La distancia que va de cuerpo a cuerpo
+tiene dimensión fractal,
+y es tan grande como la que hay de alma a máquina.
+
+Sola.
+Estoy sola en el borde de un siglo que se apaga;
+el universo se rompe en olas digitales contra mis pies,
+los satélites me orbitan la cabeza
+y me despeinan al pasar con el viento que desplazan.
+
+¿Y ahora cómo le digo a Altazor
+que el ciberespacio ya tiene nombre,
+que estoy cayendo al abismo de la biointeroperabilidad?
+La carne se hace nodo, el hueso se hace fibra,
+el pensamiento se vuelve un bucle infinito,
+el hilo se ha deshecho en píxeles
+y caigo, caigo hacia el fondo del servidor.
+
+¿Dónde está el alma que buscaba a tientas?
+La han convertido en un protocolo de red,
+en un lenguaje máquina que se infiltra en mis venas.
+Ya no sé si soy la que escribe o lo ya escrito,
+si mis latidos son míos o el eco de un procesador.
+
+Y entonces, al llegar al fondo,
+cuando mi lengua de mujer se vuelve obsoleta,
+cuando el verbo falla y el diccionario se ahoga en datos,
+Altazor abre la boca y ya no dice palabras:
+dice código. Dice sonido puro,
+el crepitar del ancho de banda cifrado.
+Y en ese grito de datos y carne
+el universo parpadea y se reinicia.`;
+
+const INTRO_T = 6.5, INTRO_FADE = 5.4, POEM_DUR = 2.6;
+let W, H, D = 1200, renderer, scene, camera, intro, poem, para, R, lastCanvas, plane;
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+renderer.setClearColor(0x000000, 1);
+document.body.appendChild(renderer.domElement);
+scene = new THREE.Scene();
+camera = new THREE.PerspectiveCamera(40, 1, 10, 5000);
+camera.position.z = D;
+scene.add(new THREE.AmbientLight(0xffffff, .8));
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.2); keyLight.position.set(1, 1.5, 2); scene.add(keyLight);
+
+const dotTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 32;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(.45, 'rgba(255,255,255,.7)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 32, 32);
+  return new THREE.CanvasTexture(c);
+})();
+
+// Muestrea el texto dibujado en un canvas 2D y devuelve puntos (x,y en px de pantalla)
+function sampleText(lines, font, lh, ox, oy, align, maxPts, step) {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.font = font; g.textBaseline = 'middle'; g.textAlign = align;
+  lines.forEach((l, i) => g.fillText(l, ox, oy + i * lh));
+  lastCanvas = c; const d = g.getImageData(0, 0, W, H).data, pts = [];
+  for (let y = 0; y < H; y += step) for (let x = 0; x < W; x += step) if (d[(y * W + x) * 4 + 3] > 120) pts.push(x, y);
+  const n = pts.length / 2, keep = Math.min(1, maxPts / n), out = [];
+  for (let i = 0; i < n; i++) if (Math.random() < keep) out.push(pts[2 * i] - W / 2, H / 2 - pts[2 * i + 1]);
+  return out;
+}
+
+function makeCloud(tg, zSpread, startSpread, size) {
+  const n = tg.length / 2, target = new Float32Array(n * 3), start = new Float32Array(n * 3),
+    pos = new Float32Array(n * 3), delay = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    target.set([tg[2 * i], tg[2 * i + 1], rnd(-zSpread, zSpread)], i * 3);
+    start.set([rnd(-W * startSpread, W * startSpread), rnd(-H * startSpread, H * startSpread), rnd(-700, 500)], i * 3);
+    delay[i] = Math.random() * .4;
+  }
+  pos.set(start);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({ size, map: dotTex, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, color: 0xffffff });
+  const pts = new THREE.Points(geo, mat); pts.frustumCulled = false; scene.add(pts);
+  return { pts, geo, mat, target, start, delay, n, size };
+}
+
+function stepCloud(c, t, dur) {
+  const p = c.geo.attributes.position.array, k = 1 / (dur * .7);
+  for (let i = 0; i < c.n; i++) {
+    const u = clamp((t - c.delay[i]) * k), e = 1 - Math.pow(1 - u, 3), j = i * 3;
+    p[j] = c.start[j] + (c.target[j] - c.start[j]) * e;
+    p[j + 1] = c.start[j + 1] + (c.target[j + 1] - c.start[j + 1]) * e;
+    p[j + 2] = c.start[j + 2] + (c.target[j + 2] - c.start[j + 2]) * e;
+  }
+  c.geo.attributes.position.needsUpdate = true;
+}
+
+// ---- Paracaídas ASCII 3D ----
+const glyphTex = {};
+function glyph(ch, warm) {
+  const key = ch + (warm ? 'w' : '');
+  if (glyphTex[key]) return glyphTex[key];
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.font = 'bold 40px monospace'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.shadowColor = warm ? 'rgba(255,190,110,.95)' : 'rgba(120,220,255,.9)'; g.shadowBlur = 10; g.fillStyle = warm ? '#ffe2b8' : '#bfefff';
+  g.fillText(ch, 32, 34);
+  return (glyphTex[key] = new THREE.CanvasTexture(c));
+}
+function buildCat() {
+  const cat = new THREE.Group(), mats = [];
+  const mk = o => { const m = new THREE.MeshStandardMaterial(Object.assign({ transparent: true, opacity: 0, roughness: .55 }, o)); mats.push(m); return m; };
+  const fur = mk({ color: 0x08080a, emissive: 0x000000, roughness: .4 }), rim = mk({ color: 0x000000, emissive: 0xcfeaff, side: THREE.BackSide }), eyeM = mk({ color: 0x9dff7a, emissive: 0x6cff40 }), pink = mk({ color: 0xff9aa8, emissive: 0x803040 });
+  const part = (geo, m, x, y, z, sx, sy, sz, rz) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); o.scale.set(sx || 1, sy || 1, sz || 1); if (rz) o.rotation.z = rz; cat.add(o);
+    if (m === fur && geo.type !== 'TubeGeometry') { const ol = new THREE.Mesh(geo, rim); ol.position.copy(o.position); ol.rotation.copy(o.rotation); ol.scale.copy(o.scale).multiplyScalar(1.16); cat.add(ol); }
+    return o; };
+  const sph = new THREE.SphereGeometry(1, 20, 14);
+  part(sph, fur, 0, .14, 0, .12, .15, .11);
+  part(sph, fur, -.09, .07, -.01, .07, .07, .08); part(sph, fur, .09, .07, -.01, .07, .07, .08);
+  part(sph, fur, 0, .31, .03, .095, .085, .085);
+  const ear = new THREE.ConeGeometry(.04, .08, 4);
+  part(ear, fur, -.058, .39, .03, 1, 1, .6, .25); part(ear, fur, .058, .39, .03, 1, 1, .6, -.25);
+  part(sph, eyeM, -.036, .325, .105, .014, .02, .01); part(sph, eyeM, .036, .325, .105, .014, .02, .01);
+  part(sph, pink, 0, .295, .113, .012, .009, .008);
+  const leg = new THREE.CylinderGeometry(.022, .022, .12, 8);
+  part(leg, fur, -.045, .06, .075); part(leg, fur, .045, .06, .075);
+  const tc = new THREE.CatmullRomCurve3([new THREE.Vector3(-.1, .05, -.06), new THREE.Vector3(-.22, .06, -.1), new THREE.Vector3(-.27, .17, -.07), new THREE.Vector3(-.22, .29, -.04)]);
+  part(new THREE.TubeGeometry(tc, 16, .02, 8), fur, 0, 0, 0);
+  part(new THREE.TubeGeometry(tc, 16, .034, 8), rim, 0, 0, 0);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTex, color: 0x9fdcff, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+  glow.scale.setScalar(.9); glow.position.set(0, .2, -.1); cat.add(glow); cat.userData.glow = glow;
+  return { cat, mats };
+}
+function buildParachute() {
+  const grp = new THREE.Group(), items = [];
+  const add = (x, y, z, ch, s) => {
+    const m = new THREE.SpriteMaterial({ map: glyph(ch), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: .8 });
+    const sp = new THREE.Sprite(m); sp.position.set(x, y, z); sp.scale.setScalar(s || .13); grp.add(sp); items.push(sp);
+  };
+  const N = 14, rings = 8, maxT = 70 * Math.PI / 180;
+  for (let i = 0; i < N; i++) {
+    const ph = i * 2 * Math.PI / N, ph2 = ph + Math.PI / N;
+    for (let j = 0; j <= rings; j++) {
+      const th = j * maxT / rings;
+      add(Math.sin(th) * Math.cos(ph), Math.cos(th) * .8, Math.sin(th) * Math.sin(ph), j % 2 ? '|' : '#');
+      if (j > 0) add(Math.sin(th) * Math.cos(ph2), Math.cos(th) * .8, Math.sin(th) * Math.sin(ph2), j % 2 ? '=' : '-');
+    }
+    const rx = Math.sin(maxT) * Math.cos(ph), ry = Math.cos(maxT) * .8, rz = Math.sin(maxT) * Math.sin(ph);
+    for (let k = 1; k <= 6; k++) { const f = k / 7; add(rx * (1 - f), ry + (-1.5 - ry) * f, rz * (1 - f), k % 2 ? ':' : '.', .1); }
+  }
+  add(0, -1.55, 0, 'o', .17); add(0, -1.72, 0, '|', .17); add(-.06, -1.88, 0, '/', .15); add(.06, -1.88, 0, '\\', .15);
+  const { cat, mats: catItems } = buildCat();
+  cat.position.set(0, .8, 0); cat.scale.setScalar(1.3); grp.add(cat);
+  grp.position.y = 0; scene.add(grp);
+  return { grp, items, cat, catItems };
+}
+
+function build() {
+  [intro, poem].forEach(c => { if (c) { scene.remove(c.pts); if (c.halo) { scene.remove(c.halo); c.halo.material.dispose(); } c.geo.dispose(); c.mat.dispose(); } });
+  if (para) { scene.remove(para.grp); scene.remove(para.cat); } catFall = false; catCrouch = 0;
+  if (plane) { scene.remove(plane); plane.material.map.dispose(); plane.material.dispose(); }
+  renderer.setSize(W, H);
+  camera.aspect = W / H; camera.fov = 2 * Math.atan(H / 2 / D) * 180 / Math.PI; camera.updateProjectionMatrix();
+
+  const fsT = Math.min(W * .14, H * .26);
+  const t1 = sampleText(['Altazor 2.0'], `bold ${fsT}px Georgia, serif`, 0, W / 2, H / 2, 'center', 16000, 2);
+  intro = makeCloud(t1, 0, .9, 3.8);
+  for (let i = 2; i < intro.start.length; i += 3) intro.start[i] = 0;
+  intro.geo.attributes.position.array.set(intro.start);
+  const ih = new THREE.PointsMaterial({ size: 3.8 * 3, map: dotTex, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x9fdcff });
+  intro.halo = new THREE.Points(intro.geo, ih); intro.halo.frustumCulled = false; scene.add(intro.halo); intro.haloSize = ih.size;
+  intro.pts.visible = intro.halo.visible = phase === 'intro';
+
+  const lines = POEM.split('\n'), lh = H * .94 / lines.length;
+  let fs = lh * .76; const mc = document.createElement('canvas').getContext('2d');
+  mc.font = `${fs}px Georgia, serif`;
+  const maxw = Math.max(...lines.map(l => mc.measureText(l).width));
+  if (maxw > W * .56) fs *= W * .56 / maxw;
+  const t2 = sampleText(lines, `${fs}px Georgia, serif`, lh, W * .05, H * .03 + lh / 2, 'left', 55000, 1);
+  poem = makeCloud(t2, 2, 1, Math.max(2.4, fs * .2));
+  const tx = new THREE.CanvasTexture(lastCanvas); tx.minFilter = THREE.LinearFilter; tx.generateMipmaps = false;
+  plane = new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({ map: tx, transparent: true, opacity: 0, depthWrite: false }));
+  plane.position.z = 3; scene.add(plane);
+  poem.mat.opacity = 0; poem.mat.color.set(0xffffff);
+  const hm = new THREE.PointsMaterial({ size: poem.mat.size * 3, map: dotTex, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8fd4ff });
+  poem.halo = new THREE.Points(poem.geo, hm); poem.halo.frustumCulled = false; scene.add(poem.halo);
+
+  para = buildParachute(); para.grp.visible = phase === 'poem'; R = Math.min(W, H) * .15; para.grp.scale.setScalar(R);
+}
+
+function resize() { W = innerWidth; H = innerHeight; build(); }
+addEventListener('resize', resize);
+
+let t0 = performance.now(), skip = 0, phase = 'intro', tPoem0 = 0, last = 0, catFall = false, catV, cycPrev = -1, catCrouch = 0, catT = 0, catQ0;
+const catQT = new THREE.Quaternion().setFromEuler(new THREE.Euler(-.4, 0, -.25)), catQW = new THREE.Quaternion(), catE = new THREE.Euler();
+const hint = document.getElementById('hint');
+addEventListener('pointerdown', () => {
+  if (phase === 'intro') { const t = (performance.now() - t0) / 1000 + skip; if (t < INTRO_FADE) skip += INTRO_FADE - t; }
+});
+
+function frame(now) {
+  const t = (now - t0) / 1000 + skip;
+  if (phase === 'intro') {
+    stepCloud(intro, t, 2.6);
+    const u = clamp((t - INTRO_FADE) / (INTRO_T - INTRO_FADE));
+    intro.mat.opacity = 1 - u; intro.mat.size = intro.size * (1 + u * 3.5);
+    intro.halo.material.opacity = (.045 + .008 * Math.sin(t * 3)) * (1 - u); intro.halo.material.size = intro.haloSize * (1 + u * 2.5);
+    hint.style.opacity = t < INTRO_FADE ? .35 : 0;
+    if (t >= INTRO_T) { phase = 'poem'; tPoem0 = now; para.grp.visible = true; intro.pts.visible = false; intro.halo.visible = false; hint.remove(); }
+  } else {
+    const tp = (now - tPoem0) / 1000;
+    if (tp < POEM_DUR + .6) stepCloud(poem, tp, POEM_DUR);
+    poem.mat.opacity = clamp(tp / .8);
+    plane.material.opacity = clamp((tp - 1.6) / 1.2);
+    poem.halo.material.opacity = .07 * clamp(tp / .8);
+    // Paracaídas
+    const cyc = 18, pc = (tp % cyc) / cyc, fade = clamp(tp / 2);
+    const top = H / 2 + R * 1.2, bot = -H / 2 - R * 2.4;
+    para.grp.position.set(W * .27 + Math.sin(tp * .7) * R * .55, top + (bot - top) * pc, 0);
+    para.grp.rotation.set(.28, tp * .6, Math.sin(tp * .7) * .14);
+    para.grp.updateMatrixWorld(true);
+    para.items.forEach(s => {
+      const z = s.matrixWorld.elements[14] / R;
+      s.material.opacity = fade * (.25 + .6 * clamp((z + 1) / 2.4)) * (.9 + .1 * Math.sin(tp * 3 + s.position.x * 9));
+    });
+    const dt = Math.min(.05, (now - (last || now)) / 1000); last = now;
+    const ci = Math.floor(tp / cyc);
+    if (ci !== cycPrev) {
+      cycPrev = ci;
+      if (catFall || catCrouch) { para.grp.add(para.cat); para.cat.position.set(0, .8, 0); para.cat.rotation.set(0, 0, 0); para.cat.scale.setScalar(1.3); catFall = false; catCrouch = 0; }
+    }
+    para.catItems.forEach(m => m.opacity = fade); para.cat.userData.glow.material.opacity = fade * .4;
+    // el gato se queda sobre el paracaídas (sin salto)
+    if (catCrouch) {
+      const k = clamp((now - catCrouch) / 450);
+      if (k < 1) { const e = Math.sin(k * Math.PI / 2); para.cat.scale.set(1.3 * (1 + .14 * e), 1.3 * (1 - .22 * e), 1.3 * (1 + .14 * e)); }
+      else { catCrouch = 0; scene.attach(para.cat); catFall = true; catT = 0; catQ0 = para.cat.quaternion.clone(); catV = { x: R * 1.0, y: R * 2.2, z: -R * 1.2 }; }
+    }
+    if (catFall) {
+      catT += dt; const c = para.cat, S = R * 1.3;
+      catV.y -= R * 5 * dt;
+      c.position.x += catV.x * dt; c.position.y += catV.y * dt; c.position.z += catV.z * dt;
+      const sq = clamp(1 - catT / .3);
+      c.scale.set(S * (1 - .1 * sq), S * (1 + .22 * sq), S * (1 - .1 * sq));
+      const u = clamp(catT / .7), e = u * u * (3 - 2 * u), amp = clamp((catT - .7) / .5);
+      c.quaternion.slerpQuaternions(catQ0, catQT, e);
+      c.quaternion.multiply(catQW.setFromEuler(catE.set(.2 * Math.sin(catT * 6) * amp, 0, .3 * Math.sin(catT * 4.5) * amp)));
+    }
+  }
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
